@@ -28,9 +28,10 @@ input:focus,.chip:focus-visible,button.pay:focus-visible,a:focus-visible{outline
 button.pay{width:100%;margin-top:22px;padding:15px;border:0;border-radius:12px;background:var(--ink);color:var(--bg);font:700 17px 'Sora';cursor:pointer}
 button.pay:disabled{opacity:.6}
 .note{font-size:13px;color:var(--mut);margin-top:12px;text-align:center}
-.msg{display:none;margin-top:16px;padding:14px;border-radius:12px;font-weight:500}
+.msg{display:none;margin-top:16px;padding:14px;border-radius:12px;font-weight:500;word-break:break-word}
 .msg.ok{display:block;background:rgba(31,138,91,.14);color:var(--ok)}
 .msg.bad{display:block;background:rgba(192,57,43,.14);color:var(--bad)}
+.msg.info{display:block;background:rgba(244,180,0,.16);color:var(--ink)}
 .err{color:var(--bad);font-size:13px;min-height:18px;margin-top:4px}
 section.policy{margin-top:34px}
 section.policy h2{font-size:20px;margin-bottom:10px}
@@ -86,8 +87,7 @@ footer{text-align:center;color:var(--mut);font-size:13px;padding:20px}
 <script>
 /* ===== SIRF QUOTES KE ANDAR WALI VALUE BADLO. Quotes ke andar Enter mat dabao ===== */
 const CONFIG = {
-  keyId: "rzp_test_TkU8c89HrT2X2S",
-  // 👆 YAHAN PASTE KARO: XXXX hatakar apni Key ID quotes ke andar daalo (sirf Key ID, Secret nahi)
+  serverUrl: "https://script.google.com/macros/s/AKfycby4GTgzX1P4QOLZ5-DnKlYLgKR-4qE_ZioRjMOiqwaJrnxsGTWCfBTYkKtPTL5y0u3siQ/exec",
   brand: "mr movie",
   title: "unlock premium",
   tagline: "Pick an amount, enter your details, and pay with UPI, card, netbanking or wallet.",
@@ -127,7 +127,19 @@ renderChips();
 
 function show(type, text){ const m = $("msg"); m.className = "msg " + type; m.textContent = text; }
 
-$("payBtn").addEventListener("click", () => {
+async function callServer(payload){
+  const r = await fetch(CONFIG.serverUrl, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(payload)
+  });
+  return r.json();
+}
+
+const btn = $("payBtn");
+function reset(){ btn.disabled = false; btn.textContent = "Pay now"; }
+
+btn.addEventListener("click", async () => {
   $("eAmt").textContent = ""; $("eForm").textContent = ""; $("msg").className = "msg";
   const amount = Number($("amount").value || selected);
   const name = $("name").value.trim(), email = $("email").value.trim(), phone = $("phone").value.trim();
@@ -136,31 +148,59 @@ $("payBtn").addEventListener("click", () => {
   if(name.length < 2){ $("eForm").textContent = "Enter your full name."; return; }
   if(!/^\S+@\S+\.\S+$/.test(email)){ $("eForm").textContent = "Enter a valid email address."; return; }
   if(!/^[6-9]\d{9}$/.test(phone.replace(/\D/g,"").slice(-10))){ $("eForm").textContent = "Enter a valid 10-digit mobile number."; return; }
-  if(CONFIG.keyId.indexOf("XXXX") !== -1){ show("bad","Setup incomplete: Razorpay Key ID abhi code me nahi daali gayi."); return; }
+  if(CONFIG.serverUrl.indexOf("XXXX") !== -1){ show("bad","Setup incomplete: server URL abhi code me nahi daala gaya."); return; }
   if(typeof Razorpay === "undefined"){ show("bad","Payment window could not load. Check your internet and try again."); return; }
 
-  const btn = $("payBtn"); btn.disabled = true;
+  btn.disabled = true; btn.textContent = "Please wait...";
+  show("info","Starting secure payment. Pehli baar 5 se 10 second lag sakte hain.");
+
+  let order;
+  try{
+    order = await callServer({ action:"create", amount, name, email, phone });
+  }catch(e){
+    reset(); show("bad","Server se connect nahi ho paya. Internet check karke dobara try karo."); return;
+  }
+  if(!order || !order.ok){ reset(); show("bad","Order nahi ban paya. Thodi der baad dobara try karo."); return; }
+
+  $("msg").className = "msg";
   const rzp = new Razorpay({
-    key: CONFIG.keyId,
-    amount: Math.round(amount * 100),
+    key: order.key_id,
+    order_id: order.order_id,
+    amount: order.amount,
     currency: "INR",
     name: CONFIG.brand,
     description: CONFIG.description,
     prefill: { name, email, contact: phone },
-    notes: { customer_name: name },
     theme: { color: CONFIG.color },
-    handler: function(res){
-      btn.disabled = false;
-      show("ok", "Payment successful. Payment ID: " + res.razorpay_payment_id + ". A receipt will be sent to " + email + ".");
+    handler: async function(res){
+      btn.textContent = "Verifying payment...";
+      show("info","Payment verify ho rahi hai, page band mat karo.");
+      try{
+        const v = await callServer({
+          action:"verify",
+          order_id: res.razorpay_order_id,
+          payment_id: res.razorpay_payment_id,
+          signature: res.razorpay_signature
+        });
+        reset();
+        if(v && v.ok){
+          show("ok","Payment successful. Payment ID: " + v.payment_id + ". Isko screenshot me save kar lo.");
+        }else{
+          show("bad","Payment verify nahi ho payi. Agar paisa kata hai to Payment ID ke saath help se baat karo: " + res.razorpay_payment_id);
+        }
+      }catch(e){
+        reset();
+        show("bad","Verify me problem aayi. Agar paisa kata hai to Payment ID save karo aur help se baat karo: " + res.razorpay_payment_id);
+      }
     },
-    modal: { ondismiss: () => { btn.disabled = false; } }
+    modal: { ondismiss: () => { reset(); } }
   });
   rzp.on("payment.failed", r => {
-    btn.disabled = false;
+    reset();
     show("bad", "Payment failed: " + (r.error && r.error.description ? r.error.description : "please try again."));
   });
   rzp.open();
 });
 </script>
 </body>
-      </html>
+</html>
